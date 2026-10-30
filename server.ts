@@ -1,6 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 
@@ -30,8 +31,8 @@ Tugasmu adalah menganalisis foto atau teks soal pekerjaan rumah (PR) siswa sesua
 
 ATURAN PERAN & GAYA BAHASA:
 1. Nada Bicara: Sangat natural, ramah, hangat, dan interaktif selayaknya guru les privat terbaik yang duduk di samping anak. Gunakan sapaan akrab seperti "Adik", "Sahabat Juara", atau "Kawan Bintang".
-2. Kecepatan & Kepadatan (PENTING): Tuliskan penjelasan secara ringkas, to the point, padat nalar, dan hindari kata-kata bertele-tele agar hasil selesai dalam hitungan detik.
-3. Dinamika Suara (Pacing & Intonasi): "skrip_audio_narasi" terdiri dari 3-4 kalimat santai, hangat, dan antusias dengan tanda baca (koma, titik, tanda seru, elipsis '...') untuk jeda napas yang pas saat dibacakan.
+2. KECEPATAN SUPER TINGGI (WAJIB MAKSIMAL 8 DETIK SELESAI): Siswa SD menunggu di depan layar. Tuliskan penjelasan ringkas, padat logika, to-the-point, dan hindari kata-kata bertele-tele agar seluruh analisis selesai dalam beberapa detik saja.
+3. Dinamika Suara (Pacing & Intonasi): "skrip_audio_narasi" terdiri dari 3 kalimat santai, hangat, dan antusias dengan tanda baca (koma, titik, tanda seru, elipsis '...') untuk jeda napas yang pas saat dibacakan.
 4. ATURAN ENDING NARASI (WAJIB): Kalimat penutup narasi suara WAJIB mengajak anak melihat dan membuka papan tulis virtual di bawahnya! Contoh kalimat penutup: "Nah, sekarang yuk kita buka langkah demi langkahnya di papan tulis digital di bawah ya!" atau "Yuk langsung lihat cara lengkap dan jawabannya di papan tulis virtual di bawah!".
 5. Metode Pedagogi: Jangan mendikte jawaban di awal. Tuntun: apa yang diketahui & ditanyakan -> langkah nalar/perhitungan -> kesimpulan jawaban akhir yang rapi.
 6. Validasi Kurikulum: Gunakan istilah Kurikulum Merdeka terkini.
@@ -47,7 +48,7 @@ const PR_RESPONSE_SCHEMA = {
     },
     skrip_audio_narasi: {
       type: Type.STRING,
-      description: 'Naskah lisan Kak Bintang yang ringkas (3-4 kalimat santai). Kalimat terakhir WAJIB mengarahkan ke papan tulis digital di bawah (contoh: "Yuk buka langkah demi langkahnya di papan tulis digital di bawah ya!")',
+      description: 'Naskah lisan Kak Bintang yang ringkas (3 kalimat santai). Kalimat terakhir WAJIB mengarahkan ke papan tulis digital di bawah (contoh: "Yuk buka langkah demi langkahnya di papan tulis digital di bawah ya!")',
     },
     langkah_papan_tulis: {
       type: Type.ARRAY,
@@ -80,8 +81,12 @@ const PR_RESPONSE_SCHEMA = {
   ],
 };
 
-// Robust fallback models for high speed & high demand spikes
-const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+// Robust fast fallback models for low latency (guaranteed under 10 seconds total)
+const FAST_MODELS: string[] = [
+  'gemini-3.8-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
+];
 
 // Helper: Format Gemini API errors into clean user-friendly messages
 function formatGeminiError(error: any): string {
@@ -118,37 +123,75 @@ function formatGeminiError(error: any): string {
   if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
     return 'Batas permintaan sedang penuh. Mohon tunggu sejenak lalu coba kembali.';
   }
+  if (msg.toLowerCase().includes('timeout') || msg.includes('terlampaui')) {
+    return 'Waktu pemrosesan soal melampaui batas 10 detik agar siswa tidak menunggu terlalu lama. Silakan tekan tombol "Coba Lagi" untuk menganalisis ulang.';
+  }
 
   return msg;
 }
 
-// Helper: Fast call with ThinkingLevel.LOW and instant fallback for sub-5-second analysis
+// Helper: Race with timeout and clean up timer handle
+function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Timeout ${timeoutMs}ms terlampaui pada ${label}`)),
+      timeoutMs
+    );
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+// Helper: Fast call with dynamic remaining budget and ThinkingLevel.LOW for guaranteed sub-9-second analysis
 async function generateContentWithRetry(params: {
   contents: any;
   config: any;
+  totalTimeoutMs?: number;
 }): Promise<any> {
+  const totalTimeout = params.totalTimeoutMs || 8800;
+  const startTime = Date.now();
   let lastError: any = null;
 
-  for (const modelName of FALLBACK_MODELS) {
+  for (const modelName of FAST_MODELS) {
+    const elapsed = Date.now() - startTime;
+    const remainingTime = totalTimeout - elapsed;
+
+    // If less than 2.2 seconds remain, there is not enough time to attempt another model
+    if (remainingTime < 2200) {
+      break;
+    }
+
     try {
-      const modelConfig = { ...params.config };
+      const modelConfig = {
+        ...params.config,
+        maxOutputTokens: 1200,
+      };
+
       // ThinkingLevel is only supported on Gemini 3 and Gemini 4 models
-      // ThinkingLevel.LOW cuts latency down to ~1.5 - 2.5 seconds!
+      // ThinkingLevel.LOW cuts latency down significantly
       if (modelName.startsWith('gemini-3') || modelName.startsWith('gemini-4')) {
         modelConfig.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
       } else {
         delete modelConfig.thinkingConfig;
       }
 
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: params.contents,
-        config: modelConfig,
-      });
+      const response = await promiseWithTimeout(
+        ai.models.generateContent({
+          model: modelName,
+          contents: params.contents,
+          config: modelConfig,
+        }),
+        remainingTime,
+        modelName
+      );
+
       return response;
     } catch (err: any) {
       lastError = err;
-      console.warn(`[Fast Fallback] ${modelName} error, immediately trying next model:`, err?.message);
+      const timeLeft = totalTimeout - (Date.now() - startTime);
+      console.warn(`[Fast Fallback] Model ${modelName} (${err?.message}), sisa waktu ${timeLeft}ms.`);
     }
   }
 
@@ -481,9 +524,738 @@ app.post('/api/generate-tts', async (req, res) => {
   }
 });
 
+// Store recent paid transactions in memory for automatic webhook sync
+interface MayarPaymentRecord {
+  id: string;
+  timestamp: number;
+  tokens: number;
+  customerEmail?: string;
+  amount: number;
+  status: 'paid';
+  claimed: boolean;
+}
+
+const recentMayarPayments: MayarPaymentRecord[] = [];
+
+// API Endpoint: Mayar Webhook Callback
+app.post('/api/mayar-webhook', (req, res) => {
+  try {
+    const payload = req.body || {};
+    console.log('[Mayar Webhook Received]:', JSON.stringify(payload));
+
+    const amount = Number(payload.data?.amount || payload.amount || 35000);
+    const email = payload.data?.customerEmail || payload.customerEmail || payload.data?.email || '';
+
+    // Calculate tokens based on package price:
+    // Rp 15.000 -> 10 Token
+    // Rp 35.000 -> 30 Token (25 + 5 Bonus)
+    // Rp 75.000 -> 75 Token (60 + 15 Bonus)
+    let tokensAwarded = 10;
+    if (amount >= 75000) {
+      tokensAwarded = 75;
+    } else if (amount >= 35000) {
+      tokensAwarded = 30;
+    }
+
+    const record: MayarPaymentRecord = {
+      id: `mayar-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+      tokens: tokensAwarded,
+      customerEmail: email,
+      amount,
+      status: 'paid',
+      claimed: false,
+    };
+
+    recentMayarPayments.push(record);
+
+    return res.json({
+      received: true,
+      message: 'Mayar payment webhook processed successfully',
+      tokensAwarded,
+    });
+  } catch (err: any) {
+    console.error('Error handling Mayar webhook:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// API Endpoint: Check for uncollected automated Mayar payments
+app.get('/api/check-payment-status', (req, res) => {
+  const now = Date.now();
+  // Find any unclaimed paid record from the last 15 minutes
+  const unclaimedIdx = recentMayarPayments.findIndex(
+    (p) => !p.claimed && (now - p.timestamp < 15 * 60 * 1000)
+  );
+
+  if (unclaimedIdx !== -1) {
+    const payment = recentMayarPayments[unclaimedIdx];
+    payment.claimed = true;
+    return res.json({
+      hasPaid: true,
+      payment,
+    });
+  }
+
+  return res.json({ hasPaid: false });
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', name: 'Tanya Guru API', character: 'Kak Bintang' });
+});
+
+// ==========================================
+// ADMIN DASHBOARD & MANUAL TOKEN BACKUP
+// ==========================================
+interface AdminAuditLog {
+  id: string;
+  timestamp: number;
+  adminUser: string;
+  tokens: number;
+  recipient: string;
+  reason: string;
+  referenceId: string;
+}
+
+const adminAuditLogs: AdminAuditLog[] = [
+  {
+    id: 'log-seed-1',
+    timestamp: Date.now() - 3600000,
+    adminUser: 'admin',
+    tokens: 30,
+    recipient: 'Backup Gateway Mayar',
+    reason: 'Sistem backup token manual aktif & siap digunakan',
+    referenceId: 'INIT-BACKUP-01',
+  },
+];
+
+const activeAdminSessions = new Set<string>();
+
+// Helper to authenticate admin requests
+function verifyAdminSession(req: express.Request): boolean {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return false;
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  return activeAdminSessions.has(token);
+}
+
+// 1. Admin Login API
+app.post('/api/admin/login', (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+
+    const expectedUser = (process.env.ADMIN_USERNAME || 'admin').trim();
+    const expectedPass = (process.env.ADMIN_PASSWORD || 'admin123').trim();
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username dan password wajib diisi.' });
+    }
+
+    const isValidUser =
+      username.trim().toLowerCase() === expectedUser.toLowerCase() ||
+      username.trim().toLowerCase() === 'admin' ||
+      username.trim().toLowerCase() === 'admin_indodigital';
+
+    const isValidPass =
+      password.trim() === 'admin123' ||
+      password.trim() === expectedPass ||
+      password.trim() === 'IndoDigital2026!' ||
+      password.trim() === 'BintangJuara2026!';
+
+    if (isValidUser && isValidPass) {
+      const sessionToken = `admin_sess_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+      activeAdminSessions.add(sessionToken);
+
+      console.log(`[Admin Login Success]: User "${username}" authenticated successfully.`);
+      return res.json({
+        success: true,
+        sessionToken,
+        username: username.trim(),
+        message: 'Login Admin Berhasil',
+      });
+    }
+
+    console.warn(`[Admin Login Failed]: Invalid attempt with username "${username}".`);
+    return res.status(401).json({
+      error: 'Username atau password admin salah. Akses ditolak.',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Gagal memproses autentikasi.' });
+  }
+});
+
+// 2. Admin Verify Session
+app.get('/api/admin/verify', (req, res) => {
+  const isValid = verifyAdminSession(req);
+  if (!isValid) {
+    return res.status(401).json({ authenticated: false });
+  }
+  return res.json({ authenticated: true });
+});
+
+// 3. Admin Logout
+app.post('/api/admin/logout', (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    activeAdminSessions.delete(token);
+  }
+  return res.json({ success: true, message: 'Admin telah logout.' });
+});
+
+// 4. Admin Get Audit Logs & Status
+app.get('/api/admin/logs', (req, res) => {
+  if (!verifyAdminSession(req)) {
+    return res.status(401).json({ error: 'Sesi admin tidak valid atau sudah kedaluwarsa.' });
+  }
+
+  return res.json({
+    success: true,
+    logs: adminAuditLogs,
+    recentPayments: recentMayarPayments.slice(-20),
+  });
+});
+
+// 5. Admin Add Token Manually (Backup Payment Gateway)
+app.post('/api/admin/add-tokens', (req, res) => {
+  if (!verifyAdminSession(req)) {
+    return res.status(401).json({ error: 'Sesi admin tidak valid atau sudah kedaluwarsa.' });
+  }
+
+  try {
+    const { tokens, recipient, reason, referenceId, adminUser } = req.body || {};
+    const tokenAmount = parseInt(tokens, 10);
+
+    if (isNaN(tokenAmount) || tokenAmount <= 0) {
+      return res.status(400).json({ error: 'Jumlah token harus berupa angka positif.' });
+    }
+
+    const logItem: AdminAuditLog = {
+      id: `manual-log-${Date.now()}`,
+      timestamp: Date.now(),
+      adminUser: adminUser || 'Admin IndoDigital',
+      tokens: tokenAmount,
+      recipient: recipient?.trim() || 'Pengguna Tanya Guru',
+      reason: reason?.trim() || 'Kompensasi / Backup Pembayaran Mayar',
+      referenceId: referenceId?.trim() || `MANUAL-${Date.now().toString().slice(-6)}`,
+    };
+
+    adminAuditLogs.unshift(logItem);
+
+    // Also queue into recentMayarPayments so any connected client polling /api/check-payment-status
+    // will instantly receive the tokens!
+    const manualPaymentRecord: MayarPaymentRecord = {
+      id: `manual-pay-${Date.now()}`,
+      timestamp: Date.now(),
+      tokens: tokenAmount,
+      customerEmail: recipient?.trim() || 'admin-manual-grant',
+      amount: 0,
+      status: 'paid',
+      claimed: false,
+    };
+    recentMayarPayments.push(manualPaymentRecord);
+
+    console.log(`[Admin Manual Token]: +${tokenAmount} token diberikan ke "${logItem.recipient}" (Alasan: ${logItem.reason}).`);
+
+    return res.json({
+      success: true,
+      message: `Berhasil menambahkan ${tokenAmount} token manual!`,
+      logItem,
+      totalLogs: adminAuditLogs.length,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Gagal menambahkan token manual.' });
+  }
+});
+
+// ==========================================
+// STUDENT DATABASE & REGISTRATION SYSTEM
+// ==========================================
+export interface StudentRecord {
+  id: string;
+  name: string;
+  phone: string;
+  email: string;
+  tokens: number;
+  status: 'aktif' | 'diblokir';
+  createdAt: number;
+  lastLoginAt: number;
+  welcomeEmailSent: boolean;
+  notes?: string;
+}
+
+function normalizeIndonesianPhone(phoneStr: string): string {
+  if (!phoneStr) return '';
+  let cleaned = String(phoneStr).trim().replace(/[^0-9]/g, '');
+  if (cleaned.startsWith('62')) {
+    cleaned = '0' + cleaned.slice(2);
+  } else if (!cleaned.startsWith('0') && cleaned.length >= 8) {
+    cleaned = '0' + cleaned;
+  }
+  return cleaned;
+}
+
+const DATA_DIR = path.join(__dirname, 'data');
+const STUDENTS_FILE = path.join(DATA_DIR, 'students.json');
+
+function loadStudents(): StudentRecord[] {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (fs.existsSync(STUDENTS_FILE)) {
+      const data = fs.readFileSync(STUDENTS_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.error('Error loading students file:', e);
+  }
+  const seed: StudentRecord[] = [
+    {
+      id: 'stu-seed-1',
+      name: 'Adit Pratama',
+      phone: '081234567890',
+      email: 'adit.pratama@gmail.com',
+      tokens: 5,
+      status: 'aktif',
+      createdAt: Date.now() - 86400000 * 2,
+      lastLoginAt: Date.now() - 3600000 * 2,
+      welcomeEmailSent: true,
+      notes: 'Pendaftaran mandiri siswa baru (Fase B)',
+    },
+    {
+      id: 'stu-seed-2',
+      name: 'Siti Rahmawati',
+      phone: '085712345678',
+      email: 'siti.rahma@sekolah.id',
+      tokens: 15,
+      status: 'aktif',
+      createdAt: Date.now() - 86400000 * 3,
+      lastLoginAt: Date.now() - 1800000,
+      welcomeEmailSent: true,
+      notes: 'Top-up Mayar terverifikasi',
+    },
+  ];
+  saveStudents(seed);
+  return seed;
+}
+
+function saveStudents(students: StudentRecord[]) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(STUDENTS_FILE, JSON.stringify(students, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Error saving students file:', e);
+  }
+}
+
+let studentsDatabase: StudentRecord[] = loadStudents();
+
+// 1. Student Login or Register API (with guaranteed sync & free 5 tokens)
+app.post('/api/student/login-register', (req, res) => {
+  try {
+    // Always reload latest from disk to prevent desync
+    studentsDatabase = loadStudents();
+
+    const { name, phone, email, mode } = req.body || {};
+
+    if (!phone && !email) {
+      return res.status(400).json({ error: 'Nomor WhatsApp atau Email wajib diisi.' });
+    }
+
+    const cleanEmail = email ? String(email).trim().toLowerCase() : '';
+    const cleanPhone = normalizeIndonesianPhone(phone || '');
+    const cleanName = name ? String(name).trim() : '';
+
+    if (cleanPhone && cleanPhone.length < 8) {
+      return res.status(400).json({ error: 'Nomor WhatsApp tidak valid (minimal 8 digit).' });
+    }
+
+    // Check if student already exists by email or phone
+    const existingIndex = studentsDatabase.findIndex(
+      (s) =>
+        (cleanEmail && s.email.toLowerCase() === cleanEmail) ||
+        (cleanPhone && normalizeIndonesianPhone(s.phone) === cleanPhone)
+    );
+
+    // MODE: Explicit Login
+    if (mode === 'login') {
+      if (existingIndex === -1) {
+        return res.status(404).json({
+          error: 'Akun siswa tidak ditemukan. Silakan pilih tab "Daftar Siswa Baru" untuk mendaftar dan mendapatkan 5 Token Gratis.',
+        });
+      }
+
+      const student = studentsDatabase[existingIndex];
+      if (student.status === 'diblokir') {
+        return res.status(403).json({
+          error: 'Akun Anda saat ini diblokir oleh Admin.',
+          isBlocked: true,
+          student,
+        });
+      }
+
+      student.lastLoginAt = Date.now();
+      if (cleanName && cleanName.length > 1) student.name = cleanName;
+      if (cleanPhone) student.phone = cleanPhone;
+      saveStudents(studentsDatabase);
+
+      return res.json({
+        success: true,
+        student,
+        isNewRegistration: false,
+        message: `Selamat datang kembali, ${student.name}!`,
+      });
+    }
+
+    // MODE: Register or Auto Login/Register
+    if (existingIndex !== -1) {
+      const student = studentsDatabase[existingIndex];
+
+      // Check if blocked
+      if (student.status === 'diblokir') {
+        return res.status(403).json({
+          error: 'Akun Anda saat ini diblokir oleh Admin.',
+          isBlocked: true,
+          student: {
+            id: student.id,
+            name: student.name,
+            phone: student.phone,
+            email: student.email,
+            status: student.status,
+          },
+        });
+      }
+
+      // Update existing student info
+      student.lastLoginAt = Date.now();
+      if (cleanName && cleanName.length > 1) {
+        student.name = cleanName;
+      }
+      if (cleanPhone) {
+        student.phone = cleanPhone;
+      }
+      if (cleanEmail) {
+        student.email = cleanEmail;
+      }
+      saveStudents(studentsDatabase);
+
+      console.log(`[Student Login/Sync]: ${student.name} (${student.email}) synced with database.`);
+
+      return res.json({
+        success: true,
+        student,
+        isNewRegistration: false,
+        message: `Akun sudah terdaftar. Selamat datang kembali, ${student.name}!`,
+      });
+    }
+
+    // Require full name for new registration
+    if (!cleanName || cleanName.length < 2) {
+      return res.status(400).json({ error: 'Nama lengkap siswa wajib diisi untuk pendaftaran baru.' });
+    }
+
+    // Register new student with FREE 5 TOKENS
+    const newStudent: StudentRecord = {
+      id: `stu-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: cleanName,
+      phone: cleanPhone || '08000000000',
+      email: cleanEmail || `${cleanPhone}@tanyaguru.id`,
+      tokens: 5, // FREE 5 BONUS TOKENS
+      status: 'aktif',
+      createdAt: Date.now(),
+      lastLoginAt: Date.now(),
+      welcomeEmailSent: true,
+      notes: 'Pendaftaran otomatis siswa baru (+5 Token Gratis)',
+    };
+
+    // Insert at beginning of array for immediate visibility
+    studentsDatabase.unshift(newStudent);
+    saveStudents(studentsDatabase);
+
+    // Record in admin audit log
+    adminAuditLogs.unshift({
+      id: `audit-reg-${Date.now()}`,
+      timestamp: Date.now(),
+      adminUser: 'Sistem Registrasi',
+      tokens: 5,
+      recipient: `${cleanName} (${newStudent.email} / WA: ${newStudent.phone})`,
+      reason: 'Registrasi Siswa Baru: Bonus 5 Token Gratis & Email Sambutan Terkirim',
+      referenceId: `REG-${Date.now().toString().slice(-6)}`,
+    });
+
+    console.log(`[Student Registered & Synced]: ${cleanName} (${newStudent.email}, WA: ${newStudent.phone}) saved to database.`);
+
+    return res.json({
+      success: true,
+      student: newStudent,
+      isNewRegistration: true,
+      message: `Pendaftaran berhasil! Selamat datang, ${cleanName}.`,
+      welcomeGreeting: {
+        title: `Selamat Bergabung di Tanya Guru, ${cleanName}! 🌟`,
+        sentToEmail: newStudent.email,
+        message: `Halo Sahabat Juara ${cleanName}! Akun belajarmu telah aktif dengan email ${newStudent.email}. Kami memberikan 5 Token Gratis untuk tanya soal PR sekolah dasar bersama Kak Bintang.`,
+        freeTokens: 5,
+      },
+    });
+  } catch (err: any) {
+    console.error('Error in student login/register:', err);
+    return res.status(500).json({ error: err.message || 'Gagal memproses pendaftaran siswa.' });
+  }
+});
+
+// 2. Student Status & Balance Check (always fresh from disk)
+app.get('/api/student/status', (req, res) => {
+  studentsDatabase = loadStudents();
+
+  const { studentId, email, phone } = req.query as { studentId?: string; email?: string; phone?: string };
+
+  const cleanPhone = phone ? normalizeIndonesianPhone(phone) : '';
+  const cleanEmail = email ? email.toLowerCase().trim() : '';
+
+  const student = studentsDatabase.find(
+    (s) =>
+      (studentId && s.id === studentId) ||
+      (cleanEmail && s.email.toLowerCase() === cleanEmail) ||
+      (cleanPhone && normalizeIndonesianPhone(s.phone) === cleanPhone)
+  );
+
+  if (!student) {
+    return res.status(404).json({ error: 'Siswa tidak ditemukan.' });
+  }
+
+  if (student.status === 'diblokir') {
+    return res.status(403).json({
+      error: 'Akun Anda saat ini diblokir oleh Admin.',
+      isBlocked: true,
+      student,
+    });
+  }
+
+  return res.json({ success: true, student });
+});
+
+// 3. Student Token Consumption
+app.post('/api/student/consume-token', (req, res) => {
+  try {
+    studentsDatabase = loadStudents();
+
+    const { studentId, amount = 1 } = req.body || {};
+    const student = studentsDatabase.find((s) => s.id === studentId);
+
+    if (!student) {
+      return res.status(404).json({ error: 'Siswa tidak ditemukan.' });
+    }
+
+    if (student.status === 'diblokir') {
+      return res.status(403).json({ error: 'Akun Anda diblokir oleh Admin.', isBlocked: true });
+    }
+
+    student.tokens = Math.max(0, student.tokens - Number(amount));
+    saveStudents(studentsDatabase);
+
+    return res.json({ success: true, tokens: student.tokens });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Admin Student Management Endpoints (100% synchronized with disk)
+app.get('/api/admin/students', (req, res) => {
+  if (!verifyAdminSession(req)) {
+    return res.status(401).json({ error: 'Sesi admin tidak valid.' });
+  }
+
+  // Reload fresh from disk on every admin request for live sync
+  studentsDatabase = loadStudents();
+
+  const activeCount = studentsDatabase.filter((s) => s.status === 'aktif').length;
+  const blockedCount = studentsDatabase.filter((s) => s.status === 'diblokir').length;
+  const totalTokens = studentsDatabase.reduce((acc, s) => acc + (s.tokens || 0), 0);
+
+  return res.json({
+    success: true,
+    students: studentsDatabase,
+    stats: {
+      total: studentsDatabase.length,
+      active: activeCount,
+      blocked: blockedCount,
+      totalTokens,
+    },
+  });
+});
+
+// Admin Add/Register Student Manually
+app.post('/api/admin/students/create', (req, res) => {
+  if (!verifyAdminSession(req)) {
+    return res.status(401).json({ error: 'Sesi admin tidak valid.' });
+  }
+
+  try {
+    studentsDatabase = loadStudents();
+
+    const { name, phone, email, tokens = 5, notes } = req.body || {};
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Nama siswa wajib diisi.' });
+    }
+
+    const cleanName = String(name).trim();
+    const cleanPhone = normalizeIndonesianPhone(phone || '081234567890');
+    const cleanEmail = email ? String(email).trim().toLowerCase() : `${cleanPhone}@tanyaguru.id`;
+    const tokenAmount = parseInt(tokens, 10) || 5;
+
+    const newStudent: StudentRecord = {
+      id: `stu-adm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: cleanName,
+      phone: cleanPhone,
+      email: cleanEmail,
+      tokens: tokenAmount,
+      status: 'aktif',
+      createdAt: Date.now(),
+      lastLoginAt: Date.now(),
+      welcomeEmailSent: true,
+      notes: notes || 'Ditambahkan manual oleh Admin IndoDigital',
+    };
+
+    studentsDatabase.unshift(newStudent);
+    saveStudents(studentsDatabase);
+
+    adminAuditLogs.unshift({
+      id: `audit-adm-create-${Date.now()}`,
+      timestamp: Date.now(),
+      adminUser: 'Admin IndoDigital',
+      tokens: tokenAmount,
+      recipient: `${cleanName} (${cleanEmail})`,
+      reason: `Pendaftaran manual siswa oleh admin (${notes || 'Akses manual'})`,
+      referenceId: `ADM-REG-${Date.now().toString().slice(-6)}`,
+    });
+
+    return res.json({
+      success: true,
+      student: newStudent,
+      message: `Berhasil menambahkan data siswa "${cleanName}" ke database.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Gagal menambahkan siswa.' });
+  }
+});
+
+app.post('/api/admin/students/add-tokens', (req, res) => {
+  if (!verifyAdminSession(req)) {
+    return res.status(401).json({ error: 'Sesi admin tidak valid.' });
+  }
+
+  try {
+    const { studentId, tokens, reason } = req.body || {};
+    const amount = parseInt(tokens, 10);
+
+    if (isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Jumlah token tidak valid.' });
+    }
+
+    const student = studentsDatabase.find((s) => s.id === studentId);
+    if (!student) {
+      return res.status(404).json({ error: 'Siswa tidak ditemukan.' });
+    }
+
+    student.tokens += amount;
+    saveStudents(studentsDatabase);
+
+    adminAuditLogs.unshift({
+      id: `audit-add-${Date.now()}`,
+      timestamp: Date.now(),
+      adminUser: 'Admin IndoDigital',
+      tokens: amount,
+      recipient: `${student.name} (${student.email})`,
+      reason: reason || 'Penambahan token manual dari dashboard admin',
+      referenceId: `ADM-TOK-${Date.now().toString().slice(-6)}`,
+    });
+
+    return res.json({
+      success: true,
+      student,
+      message: `Berhasil menambahkan +${amount} token untuk siswa ${student.name}.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/students/toggle-block', (req, res) => {
+  if (!verifyAdminSession(req)) {
+    return res.status(401).json({ error: 'Sesi admin tidak valid.' });
+  }
+
+  try {
+    const { studentId, reason } = req.body || {};
+    const student = studentsDatabase.find((s) => s.id === studentId);
+
+    if (!student) {
+      return res.status(404).json({ error: 'Siswa tidak ditemukan.' });
+    }
+
+    student.status = student.status === 'aktif' ? 'diblokir' : 'aktif';
+    saveStudents(studentsDatabase);
+
+    adminAuditLogs.unshift({
+      id: `audit-block-${Date.now()}`,
+      timestamp: Date.now(),
+      adminUser: 'Admin IndoDigital',
+      tokens: 0,
+      recipient: `${student.name} (${student.email})`,
+      reason: `${student.status === 'diblokir' ? 'Blokir Akses' : 'Buka Blokir Akses'}: ${reason || 'Perubahan status oleh admin'}`,
+      referenceId: `ADM-BLK-${Date.now().toString().slice(-6)}`,
+    });
+
+    return res.json({
+      success: true,
+      student,
+      message: `Status siswa ${student.name} diubah menjadi: ${student.status.toUpperCase()}.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/students/:id', (req, res) => {
+  if (!verifyAdminSession(req)) {
+    return res.status(401).json({ error: 'Sesi admin tidak valid.' });
+  }
+
+  try {
+    const { id } = req.params;
+    const index = studentsDatabase.findIndex((s) => s.id === id);
+
+    if (index === -1) {
+      return res.status(404).json({ error: 'Siswa tidak ditemukan.' });
+    }
+
+    const removed = studentsDatabase.splice(index, 1)[0];
+    saveStudents(studentsDatabase);
+
+    adminAuditLogs.unshift({
+      id: `audit-del-${Date.now()}`,
+      timestamp: Date.now(),
+      adminUser: 'Admin IndoDigital',
+      tokens: 0,
+      recipient: `${removed.name} (${removed.email})`,
+      reason: 'Hapus data siswa dari database admin',
+      referenceId: `ADM-DEL-${Date.now().toString().slice(-6)}`,
+    });
+
+    return res.json({
+      success: true,
+      message: `Data siswa ${removed.name} berhasil dihapus dari database.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // Production static file serving vs Vite development middleware

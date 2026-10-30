@@ -3,6 +3,7 @@ import {
   TanyaGuruResult,
   SoalHistoryItem,
   TokenTransaction,
+  StudentUser,
 } from './types';
 import { Header } from './components/Header';
 import { KakBintangAvatar } from './components/KakBintangAvatar';
@@ -14,6 +15,8 @@ import { SoalLatihanSection } from './components/SoalLatihanSection';
 import { MayarTopupModal } from './components/MayarTopupModal';
 import { RiwayatBelajarModal } from './components/RiwayatBelajarModal';
 import { ParentGuideModal } from './components/ParentGuideModal';
+import { AdminDashboardModal } from './components/AdminDashboardModal';
+import { StudentAuthModal } from './components/StudentAuthModal';
 import {
   Sparkles,
   BookOpen,
@@ -28,8 +31,18 @@ import {
   Heart,
   Share2,
   AlertTriangle,
+  MessageCircle,
+  Phone,
+  Shield,
+  Lock,
+  Music,
+  Volume2,
+  VolumeX,
+  Zap,
 } from 'lucide-react';
+import confetti from 'canvas-confetti';
 import { playChimeSound } from './utils/speech';
+import { startSoftAnalysisBgm, stopSoftAnalysisBgm, setBgmMuted } from './utils/backgroundMusic';
 
 export default function App() {
   // Tokens state
@@ -94,9 +107,102 @@ export default function App() {
   const [isTopupModalOpen, setIsTopupModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isParentGuideModalOpen, setIsParentGuideModalOpen] = useState(false);
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+  const [isStudentAuthOpen, setIsStudentAuthOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [analysisElapsed, setAnalysisElapsed] = useState(0);
+  const [isBgmSilent, setIsBgmSilent] = useState(false);
 
-  const userEmail = 'bca.ccpl@gmail.com';
+  // 10-Second Analysis Countdown Timer
+  useEffect(() => {
+    let timer: any = null;
+    if (isLoading) {
+      setAnalysisElapsed(0);
+      timer = setInterval(() => {
+        setAnalysisElapsed((prev) => {
+          if (prev >= 10) return 10;
+          return +(prev + 0.1).toFixed(1);
+        });
+      }, 100);
+    } else {
+      setAnalysisElapsed(0);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isLoading]);
+
+  // Student Profile & Authentication State
+  const [currentStudent, setCurrentStudent] = useState<StudentUser | null>(() => {
+    try {
+      const saved = localStorage.getItem('tanya_guru_student');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isStudentBlocked, setIsStudentBlocked] = useState(false);
+
+  const userEmail = currentStudent?.email || 'bca.ccpl@gmail.com';
+
+  // Check URL hash for direct admin dashboard navigation (#admin)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.hash === '#admin') {
+        setIsAdminModalOpen(true);
+      }
+      const handleHash = () => {
+        if (window.location.hash === '#admin') {
+          setIsAdminModalOpen(true);
+        }
+      };
+      window.addEventListener('hashchange', handleHash);
+      return () => window.removeEventListener('hashchange', handleHash);
+    }
+  }, []);
+
+  // Save student profile
+  useEffect(() => {
+    if (currentStudent) {
+      localStorage.setItem('tanya_guru_student', JSON.stringify(currentStudent));
+      setIsStudentBlocked(currentStudent.status === 'diblokir');
+    } else {
+      localStorage.removeItem('tanya_guru_student');
+      setIsStudentBlocked(false);
+    }
+  }, [currentStudent]);
+
+  // Periodic student status & token balance check with server (updates live when admin changes tokens/blocks)
+  useEffect(() => {
+    if (!currentStudent) return;
+
+    const checkStudentStatus = async () => {
+      try {
+        const res = await fetch(`/api/student/status?studentId=${currentStudent.id}`);
+        if (res.status === 403) {
+          setIsStudentBlocked(true);
+          setCurrentStudent((prev) => (prev ? { ...prev, status: 'diblokir' } : null));
+          return;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          if (data.student) {
+            const updated: StudentUser = data.student;
+            if (updated.status !== currentStudent.status || updated.tokens !== currentStudent.tokens) {
+              setCurrentStudent(updated);
+              setIsStudentBlocked(updated.status === 'diblokir');
+              setTokens(updated.tokens);
+            }
+          }
+        }
+      } catch {
+        // Silent check
+      }
+    };
+
+    const interval = setInterval(checkStudentStatus, 4000);
+    return () => clearInterval(interval);
+  }, [currentStudent]);
 
   // Save tokens and transactions
   useEffect(() => {
@@ -139,10 +245,112 @@ export default function App() {
     showToast(`🎉 Sukses! +${amount} Token telah masuk ke akunmu.`);
   };
 
+  // 1. Otomatis deteksi ketika kembali dari link pembayaran Mayar (?payment=success / ?status=paid)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get('payment') || params.get('status') || params.get('paid');
+
+    if (paymentStatus === 'success' || paymentStatus === 'paid' || paymentStatus === 'true') {
+      const tokenCount = parseInt(params.get('tokens') || '30', 10);
+      handleAddTokens(
+        tokenCount,
+        `Top-up Mayar Otomatis: mayar.to/indo-digital (+${tokenCount} Token)`,
+        'mayar_topup'
+      );
+      playChimeSound('success');
+      confetti({ particleCount: 100, spread: 80, origin: { y: 0.6 } });
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, '', cleanUrl);
+    }
+  }, []);
+
+  // 2. Otomatis cek webhook Mayar di server (polling setiap 3,5 detik saat tab aktif)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/check-payment-status');
+        const data = await res.json();
+        if (data.hasPaid && data.payment) {
+          const awarded = data.payment.tokens || 30;
+          handleAddTokens(
+            awarded,
+            `Top-up Mayar Otomatis (Rp ${Number(data.payment.amount).toLocaleString('id-ID')} via mayar.to/indo-digital)`,
+            'mayar_topup'
+          );
+          playChimeSound('success');
+          confetti({ particleCount: 120, spread: 85, origin: { y: 0.6 } });
+          setIsTopupModalOpen(false);
+          showToast(`🎉 Pembayaran Mayar berhasil! +${awarded} Token telah ditambahkan otomatis ke saldo belajarmu.`);
+        }
+      } catch (e) {
+        // Silent background check
+      }
+    }, 3500);
+
+    return () => clearInterval(interval);
+  }, [tokens]);
+
+  // Student Login Success & Logout handlers
+  const handleStudentLoginSuccess = (
+    student: StudentUser,
+    welcomeGreeting?: { title: string; sentToEmail: string; message: string; freeTokens: number }
+  ) => {
+    setCurrentStudent(student);
+    setTokens(student.tokens);
+    setIsStudentBlocked(student.status === 'diblokir');
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('tanya_guru_student_updated', { detail: student }));
+      localStorage.setItem('tanya_guru_sync_time', Date.now().toString());
+    }
+
+    if (welcomeGreeting) {
+      setTransactions((prev) => [
+        {
+          id: `tx-welcome-${Date.now()}`,
+          timestamp: Date.now(),
+          description: `Bonus Registrasi Siswa Baru (${student.email})`,
+          amount: welcomeGreeting.freeTokens,
+          balanceAfter: student.tokens,
+          type: 'bonus',
+        },
+        ...prev,
+      ]);
+      showToast(`🎉 Selamat datang, ${student.name}! +${welcomeGreeting.freeTokens} Token Gratis aktif.`);
+    } else {
+      showToast(`Selamat datang kembali, ${student.name}!`);
+    }
+  };
+
+  const handleStudentLogout = () => {
+    setCurrentStudent(null);
+    setIsStudentBlocked(false);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('tanya_guru_student_updated', { detail: null }));
+      localStorage.setItem('tanya_guru_sync_time', Date.now().toString());
+    }
+    showToast('Anda telah keluar dari akun siswa.');
+  };
+
   // Consume 1 token upon successful PR answer
-  const deductTokenForAnalysis = (topic: string) => {
+  const deductTokenForAnalysis = async (topic: string) => {
     const newBal = Math.max(0, tokens - 1);
     setTokens(newBal);
+
+    if (currentStudent) {
+      setCurrentStudent((prev) => (prev ? { ...prev, tokens: newBal } : null));
+      try {
+        await fetch('/api/student/consume-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ studentId: currentStudent.id, amount: 1 }),
+        });
+      } catch {
+        // Ignore network glitch
+      }
+    }
+
     setTransactions((prev) => [
       {
         id: `usage-${Date.now()}`,
@@ -166,6 +374,21 @@ export default function App() {
     fase: string;
     mataPelajaran: string;
   }) => {
+    // 1. Check if blocked
+    if (isStudentBlocked) {
+      setErrorMessage(
+        'Akun Anda saat ini sedang diblokir oleh Admin. Tidak dapat memproses soal PR. Silakan hubungi CS WhatsApp: 089673686625 untuk membuka blokir akses.'
+      );
+      return;
+    }
+
+    // 2. Check if student has registered / logged in
+    if (!currentStudent) {
+      setIsStudentAuthOpen(true);
+      showToast('Silakan masuk atau daftar siswa terlebih dahulu (+5 Token Gratis)!');
+      return;
+    }
+
     if (tokens <= 0) {
       setIsTopupModalOpen(true);
       return;
@@ -176,12 +399,24 @@ export default function App() {
     setCurrentResult(null);
     setLastSubmittedData(data);
 
+    // 1. Putar backsound musik lembut selama menganalisa soal
+    startSoftAnalysisBgm();
+
+    // 2. Batas waktu maksimal 10 detik (klien abort jika lewat 9.8 detik)
+    const abortCtrl = new AbortController();
+    const timeoutId = setTimeout(() => {
+      abortCtrl.abort();
+    }, 9800);
+
     try {
       const res = await fetch('/api/analyze-pr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
+        signal: abortCtrl.signal,
       });
+
+      clearTimeout(timeoutId);
 
       const json = await res.json();
       if (!res.ok) {
@@ -218,8 +453,18 @@ export default function App() {
         });
       }, 300);
     } catch (err: any) {
-      setErrorMessage(err.message || 'Terjadi gangguan saat memproses soal.');
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        setErrorMessage(
+          'Waktu analisis mencapai batas maksimal 10 detik. Sistem memprioritaskan agar siswa tidak menunggu lama. Silakan tekan tombol "Coba Lagi" untuk diproses secara instan.'
+        );
+      } else {
+        setErrorMessage(err.message || 'Terjadi gangguan saat memproses soal.');
+      }
     } finally {
+      clearTimeout(timeoutId);
+      // Hentikan backsound musik lembut dengan fade out
+      stopSoftAnalysisBgm();
       setIsLoading(false);
     }
   };
@@ -278,10 +523,37 @@ export default function App() {
         userRole={userRole}
         setUserRole={setUserRole}
         userEmail={userEmail}
+        student={currentStudent}
+        onOpenStudentLogin={() => setIsStudentAuthOpen(true)}
+        onLogoutStudent={handleStudentLogout}
       />
 
       {/* Hero Welcome Section */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-6 md:py-8 space-y-7">
+        {/* Blocked Account Warning Banner */}
+        {isStudentBlocked && (
+          <div className="bg-rose-50 border-2 border-rose-400 text-rose-900 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm animate-scale-up">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-6 h-6 text-rose-600 shrink-0" />
+              <div>
+                <p className="font-extrabold text-sm">Akun Siswa Sedang Diblokir oleh Admin</p>
+                <p className="text-xs text-rose-800">
+                  Akses tanya soal PR dibatasi sementara. Hubungi Customer Service WhatsApp untuk membuka kembali blokir akun belajar Anda.
+                </p>
+              </div>
+            </div>
+            <a
+              href="https://wa.me/6289673686625?text=Halo%20Admin%20IndoDigital%2C%20akun%20saya%20terblokir%20di%20Tanya%20Guru%2C%20mohon%20bantuan%20buka%20blokir"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shrink-0 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs"
+            >
+              <MessageCircle className="w-3.5 h-3.5 fill-white" />
+              <span>CS WA 089673686625</span>
+            </a>
+          </div>
+        )}
+
         <section className="bg-gradient-to-br from-amber-100 via-orange-50 to-amber-200/60 rounded-3xl p-5 md:p-8 border-2 border-amber-300 shadow-sm relative overflow-hidden">
           <div className="flex flex-col md:flex-row items-center gap-6">
             {/* Mascot Avatar with dynamic speech bubble */}
@@ -345,6 +617,59 @@ export default function App() {
             onOpenTopup={() => setIsTopupModalOpen(true)}
           />
         </section>
+
+        {/* Active Analysis Loading Progress & Soft Music Card */}
+        {isLoading && (
+          <div className="p-4 md:p-5 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-white shadow-lg shadow-orange-200 border-2 border-orange-400 animate-fadeIn">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center flex-shrink-0">
+                  <Music className="w-5 h-5 text-white animate-bounce" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-['Fredoka',sans-serif] font-bold text-sm md:text-base">
+                      Kak Bintang Menganalisis Kilat...
+                    </span>
+                    <span className="text-[10px] bg-white text-orange-700 font-extrabold px-2 py-0.5 rounded-full shadow-xs flex items-center gap-1">
+                      <Zap className="w-3 h-3 fill-orange-500" /> Maksimal 10 Detik
+                    </span>
+                  </div>
+                  <div className="text-xs text-amber-100 flex items-center gap-2 mt-0.5 flex-wrap">
+                    <span>🎵 Musik lembut belajar aktif</span>
+                    <span>•</span>
+                    <span className="font-bold text-white bg-black/20 px-2 py-0.5 rounded-md">
+                      ⏱️ Estimasi: {Math.max(0, 10 - Math.floor(analysisElapsed))}s lagi
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Mute/unmute button for comfort */}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !isBgmSilent;
+                  setIsBgmSilent(next);
+                  setBgmMuted(next);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-white text-xs font-semibold backdrop-blur-xs transition-all cursor-pointer self-end sm:self-auto"
+                title={isBgmSilent ? 'Nyalakan Musik Lembut' : 'Heningkan Musik'}
+              >
+                {isBgmSilent ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4 animate-pulse" />}
+                <span>{isBgmSilent ? 'Nyalakan Musik' : 'Matikan Musik'}</span>
+              </button>
+            </div>
+
+            {/* Visual 10-second countdown progress bar */}
+            <div className="w-full bg-black/20 h-2.5 rounded-full overflow-hidden mt-3 p-0.5">
+              <div
+                className="h-full bg-gradient-to-r from-amber-200 via-orange-100 to-white rounded-full transition-all duration-100 ease-linear shadow-xs"
+                style={{ width: `${Math.min(100, (analysisElapsed / 10) * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Error Notification */}
         {errorMessage && (
@@ -453,17 +778,52 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="mt-12 border-t-2 border-amber-200 bg-white py-6 px-4 text-center text-xs text-slate-500 space-y-2">
-        <div className="flex flex-wrap items-center justify-center gap-4 text-slate-600 font-semibold">
+      <footer className="mt-14 border-t-2 border-amber-200 bg-white py-8 px-4 text-center text-xs text-slate-500 space-y-3.5 shadow-xs">
+        {/* Navigation / Links */}
+        <div className="flex flex-wrap items-center justify-center gap-3 text-slate-600 font-semibold text-xs">
           <span>Tanya Guru bersama Kak Bintang</span>
           <span>•</span>
           <span>Kurikulum Merdeka SD</span>
           <span>•</span>
-          <span>Integrasi Pembayaran Mayar</span>
-          <span>•</span>
-          <span>Google AI Gemini Powered</span>
+          <a
+            href="https://mayar.to/indo-digital"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:underline text-amber-700 font-bold"
+          >
+            Pembayaran Mayar (indo-digital)
+          </a>
         </div>
-        <p className="text-[11px] text-slate-400">
+
+        {/* Powered by IndoDigital & CS WhatsApp */}
+        <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+          <div className="inline-flex items-center gap-1.5 bg-slate-100 border border-slate-200 text-slate-700 px-3.5 py-1.5 rounded-full text-xs font-bold">
+            <span>Powered by</span>
+            <span className="font-extrabold text-slate-900 tracking-wide">IndoDigital</span>
+            {/* Discreet Admin Lock Button */}
+            <button
+              onClick={() => setIsAdminModalOpen(true)}
+              className="ml-1 text-slate-400 hover:text-slate-800 transition-colors p-0.5 rounded cursor-pointer"
+              title="Akses Admin IndoDigital (Backup Gateway Mayar)"
+              aria-label="Admin Portal"
+            >
+              <Lock className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <a
+            href="https://wa.me/6289673686625?text=Halo%20CS%20IndoDigital%2C%20saya%20butuh%20bantuan%20terkait%20aplikasi%20Tanya%20Guru"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white font-black px-4 py-1.5 rounded-full text-xs shadow-sm hover:shadow transition-all transform hover:scale-[1.02] active:scale-98 cursor-pointer"
+            title="Hubungi Layanan Bantuan / CS WhatsApp"
+          >
+            <MessageCircle className="w-4 h-4 fill-white text-white" />
+            <span>CS WhatsApp: 089673686625</span>
+          </a>
+        </div>
+
+        <p className="text-[11px] text-slate-400 max-w-md mx-auto">
           Dirancang untuk mengasah nalar kritis dan kemandirian belajar anak sekolah dasar di Indonesia.
         </p>
       </footer>
@@ -488,6 +848,51 @@ export default function App() {
       <ParentGuideModal
         isOpen={isParentGuideModalOpen}
         onClose={() => setIsParentGuideModalOpen(false)}
+      />
+
+      <AdminDashboardModal
+        isOpen={isAdminModalOpen}
+        onClose={() => {
+          setIsAdminModalOpen(false);
+          if (typeof window !== 'undefined' && window.location.hash === '#admin') {
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        }}
+        onCreditTokensToActiveSession={(amount, reason) => {
+          handleAddTokens(amount, reason, 'mayar_topup');
+          playChimeSound('success');
+          confetti({ particleCount: 120, spread: 80, origin: { y: 0.6 } });
+        }}
+        currentUserEmail={userEmail}
+        currentTokens={tokens}
+        onRefreshActiveStudent={async () => {
+          if (currentStudent) {
+            try {
+              const res = await fetch(`/api/student/status?studentId=${currentStudent.id}`);
+              if (res.status === 403) {
+                setIsStudentBlocked(true);
+                setCurrentStudent((prev) => (prev ? { ...prev, status: 'diblokir' } : null));
+              } else if (res.ok) {
+                const data = await res.json();
+                if (data.student) {
+                  setCurrentStudent(data.student);
+                  setIsStudentBlocked(data.student.status === 'diblokir');
+                  setTokens(data.student.tokens);
+                }
+              }
+            } catch {
+              // Ignore
+            }
+          }
+        }}
+      />
+
+      {/* Student Login / Register Modal */}
+      <StudentAuthModal
+        isOpen={isStudentAuthOpen}
+        onClose={() => setIsStudentAuthOpen(false)}
+        onLoginSuccess={handleStudentLoginSuccess}
+        currentStudent={currentStudent}
       />
     </div>
   );

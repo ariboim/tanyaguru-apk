@@ -14,9 +14,15 @@ import {
   History,
   Check,
   Zap,
+  ExternalLink,
+  Copy,
+  Link as LinkIcon,
+  MessageCircle,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { playChimeSound } from '../utils/speech';
+
+export const MAYAR_PAYMENT_URL = 'https://mayar.to/indo-digital';
 
 interface MayarTopupModalProps {
   isOpen: boolean;
@@ -71,8 +77,19 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
   const [paymentStep, setPaymentStep] = useState<'select' | 'qris' | 'success'>('select');
   const [voucherCode, setVoucherCode] = useState('');
   const [voucherMessage, setVoucherMessage] = useState<{ text: string; isError?: boolean } | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   if (!isOpen) return null;
+
+  const handleCopyMayarLink = () => {
+    navigator.clipboard.writeText(MAYAR_PAYMENT_URL);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const handleOpenMayarLink = () => {
+    window.open(MAYAR_PAYMENT_URL, '_blank', 'noopener,noreferrer');
+  };
 
   const handleStartPayment = (pkg: MayarPackage) => {
     setSelectedPkg(pkg);
@@ -83,7 +100,7 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
     const totalAdded = selectedPkg.tokens + selectedPkg.bonusTokens;
     onAddTokens(
       totalAdded,
-      `Top-up Mayar: ${selectedPkg.name} (${selectedPkg.priceFormatted})`,
+      `Top-up Mayar: ${selectedPkg.name} (${selectedPkg.priceFormatted}) via mayar.to/indo-digital`,
       'mayar_topup'
     );
     playChimeSound('success');
@@ -139,7 +156,7 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-full hover:bg-white/20 text-white transition-colors"
+            className="p-1.5 rounded-full hover:bg-white/20 text-white transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -152,7 +169,7 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
               setActiveTab('checkout');
               if (paymentStep === 'success') setPaymentStep('select');
             }}
-            className={`pb-2 px-3 text-xs md:text-sm font-bold border-b-2 transition-all flex items-center gap-1.5 ${
+            className={`pb-2 px-3 text-xs md:text-sm font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'checkout'
                 ? 'border-amber-500 text-amber-900'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -163,7 +180,7 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
           </button>
           <button
             onClick={() => setActiveTab('history')}
-            className={`pb-2 px-3 text-xs md:text-sm font-bold border-b-2 transition-all flex items-center gap-1.5 ${
+            className={`pb-2 px-3 text-xs md:text-sm font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'history'
                 ? 'border-amber-500 text-amber-900'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -221,6 +238,45 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
             </div>
           ) : paymentStep === 'select' ? (
             <>
+              {/* Mayar Official Link Card Banner */}
+              <div className="bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-amber-500/10 border border-amber-300 rounded-2xl p-3 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center flex-shrink-0 shadow-2xs">
+                    <LinkIcon className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-black uppercase text-amber-900 tracking-wider">
+                      Link Pembayaran Mayar Resmi
+                    </p>
+                    <p className="text-xs font-bold text-amber-700 truncate font-mono">
+                      {MAYAR_PAYMENT_URL}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleCopyMayarLink}
+                    className="p-1.5 rounded-lg bg-white border border-amber-200 text-amber-900 hover:bg-amber-50 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                    title="Salin Link Pembayaran Mayar"
+                  >
+                    {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span className="hidden sm:inline text-[11px]">{copiedLink ? 'Tersalin' : 'Salin'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleOpenMayarLink}
+                    className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer shadow-xs"
+                    title="Buka langsung di Mayar"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline text-[11px]">Buka Link</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Package cards */}
               <div className="space-y-3">
                 {MAYAR_PACKAGES.map((pkg) => {
@@ -320,7 +376,7 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
               </button>
             </>
           ) : paymentStep === 'qris' ? (
-            /* QRIS Mayar payment screen */
+            /* QRIS Mayar payment screen with direct Mayar Link */
             <div className="text-center space-y-4 py-2">
               <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 inline-block">
                 <p className="text-xs font-bold text-amber-900">
@@ -331,13 +387,51 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
                 </p>
               </div>
 
+              {/* Direct Mayar Link CTA Box */}
+              <div className="bg-gradient-to-r from-amber-100 to-orange-100 border-2 border-amber-400 rounded-2xl p-3.5 text-left flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                <div>
+                  <div className="flex items-center gap-1.5 text-xs font-black text-amber-950">
+                    <Sparkles className="w-4 h-4 text-amber-600" />
+                    <span>Tautan Langsung Mayar:</span>
+                  </div>
+                  <a
+                    href={MAYAR_PAYMENT_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs font-bold text-amber-800 underline hover:text-amber-950 font-mono break-all"
+                  >
+                    {MAYAR_PAYMENT_URL}
+                  </a>
+                </div>
+
+                <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleCopyMayarLink}
+                    className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-amber-50 border border-amber-300 text-amber-900 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedLink ? 'Tersalin' : 'Salin Link'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleOpenMayarLink}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer transition-colors shadow-xs"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Buka Mayar</span>
+                  </button>
+                </div>
+              </div>
+
               {/* QRIS Display Container */}
               <div className="p-4 bg-white border-2 border-slate-800 rounded-2xl inline-block shadow-md">
                 <div className="flex items-center justify-between text-[10px] font-bold text-slate-700 pb-2 mb-2 border-b border-slate-200">
                   <span>QRIS STANDAR PEMBAYARAN NASIONAL</span>
                   <span className="text-emerald-600">MAYAR INSTAN</span>
                 </div>
-                {/* SVG QR Code Simulation */}
+                {/* SVG QR Code */}
                 <div className="w-48 h-48 mx-auto flex items-center justify-center bg-slate-50 p-2 rounded-lg border border-dashed border-slate-300">
                   <svg viewBox="0 0 100 100" className="w-full h-full text-slate-800">
                     <rect width="100" height="100" fill="white" />
@@ -374,24 +468,30 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
                 </div>
               </div>
 
+              {/* Automatic detection notice */}
+              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 flex items-center justify-center gap-2 text-xs text-emerald-900 font-bold">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                <span>Otomatis Sinkronisasi: Token bertambah sendiri begitu pembayaran di mayar.to/indo-digital terverifikasi.</span>
+              </div>
+
               <div className="flex items-center justify-center gap-1.5 text-xs text-amber-700 font-semibold">
                 <Clock className="w-3.5 h-3.5 animate-spin" />
                 <span>Menunggu konfirmasi pembayaran via Mayar...</span>
               </div>
 
-              {/* Instant Simulator Button */}
+              {/* Instant Claim / Completed Payment Button */}
               <div className="pt-2 space-y-2">
                 <button
                   onClick={handleCompleteMayarPayment}
                   className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-sm shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all"
                 >
                   <CheckCircle className="w-4 h-4" />
-                  <span>Simulasikan Pembayaran Berhasil (Mayar Instant)</span>
+                  <span>Saya Sudah Bayar di Mayar (Klaim {selectedPkg.tokens + selectedPkg.bonusTokens} Token)</span>
                 </button>
 
                 <button
                   onClick={() => setPaymentStep('select')}
-                  className="text-xs text-slate-500 hover:text-slate-700 font-semibold underline"
+                  className="text-xs text-slate-500 hover:text-slate-700 font-semibold underline cursor-pointer"
                 >
                   Kembali ke pilihan paket
                 </button>
@@ -408,7 +508,7 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
                   Pembayaran Mayar Berhasil!
                 </h4>
                 <p className="text-xs text-slate-600 mt-1 max-w-xs mx-auto">
-                  Token belajarmu telah bertambah. Kak Bintang siap membedah PR berikutnya!
+                  Token belajarmu telah bertambah melalui tautan resmi Mayar (mayar.to/indo-digital). Kak Bintang siap membedah PR berikutnya!
                 </p>
               </div>
 
@@ -429,10 +529,22 @@ export const MayarTopupModal: React.FC<MayarTopupModalProps> = ({
           )}
         </div>
 
-        {/* Security Footer */}
-        <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-center gap-1.5 text-[11px] text-slate-500 font-medium">
-          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-          <span>Transaksi aman dan terenkripsi melalui Mayar Indonesia</span>
+        {/* Security Footer & CS Support */}
+        <div className="p-3 bg-slate-50 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 font-medium">
+          <div className="flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Terenkripsi Mayar Indonesia ({MAYAR_PAYMENT_URL})</span>
+          </div>
+
+          <a
+            href="https://wa.me/6289673686625?text=Halo%20CS%20IndoDigital%2C%20saya%20butuh%20bantuan%20terkait%20pembayaran%20Mayar"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-1"
+          >
+            <MessageCircle className="w-3.5 h-3.5 fill-emerald-600 text-emerald-600" />
+            <span>CS WA: 089673686625</span>
+          </a>
         </div>
       </div>
     </div>

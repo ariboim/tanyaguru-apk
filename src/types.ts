@@ -52,3 +52,17 @@ export interface PracticeEvaluation {
   jawabanBenar?: string;
   pesanPenyemangat: string;
 }
+
+export interface StudentUser {
+  id: string;
+  name: string;
+  phone: string;
+  email: string;
+  tokens: number;
+  status: 'aktif' | 'diblokir';
+  createdAt: number;
+  lastLoginAt: number;
+  welcomeEmailSent: boolean;
+  notes?: string;
+}
+

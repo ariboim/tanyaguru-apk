@@ -89,6 +89,11 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Selected sample question state & visual scroll highlight
+  const [selectedSample, setSelectedSample] = useState<string | null>(null);
+  const [isHighlightQuestion, setIsHighlightQuestion] = useState(false);
 
   // File Upload Handler
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -235,12 +240,29 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
   };
 
   const handleApplySample = (sample: (typeof SAMPLE_QUESTIONS)[0]) => {
+    setSelectedSample(sample.label);
     setPromptText(sample.text);
     setFase(sample.fase);
     setMataPelajaran(sample.mataPelajaran);
     setImagePreview(null);
     setActiveDriveUrl(null);
     setDriveMeta(null);
+
+    // Visual feedback highlight on the question box
+    setIsHighlightQuestion(true);
+    setTimeout(() => {
+      setIsHighlightQuestion(false);
+    }, 2000);
+
+    // Direct and smooth scroll directly to the question input textarea
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        textareaRef.current.focus();
+        const textLen = sample.text.length;
+        textareaRef.current.setSelectionRange(textLen, textLen);
+      }
+    }, 60);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -493,18 +515,50 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
           </div>
         )}
 
-        {/* Textarea for question or voice dictation */}
-        <div className="relative">
+        {/* Active Sample Question banner if selected */}
+        {selectedSample && (
+          <div className="flex items-center justify-between gap-2 text-xs px-3.5 py-2 rounded-xl bg-gradient-to-r from-orange-50 via-amber-50 to-orange-50 border border-orange-200 text-orange-950 font-semibold mb-2 shadow-xs transition-all">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="flex h-2.5 w-2.5 relative flex-shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-orange-500"></span>
+              </span>
+              <span className="truncate">
+                Soal Terpilih: <strong className="text-orange-900">{selectedSample}</strong>
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedSample(null);
+                setPromptText('');
+              }}
+              className="text-[11px] text-orange-600 hover:text-orange-800 font-bold underline cursor-pointer flex-shrink-0 active:scale-95 ml-1"
+            >
+              Ganti
+            </button>
+          </div>
+        )}
+
+        {/* Dedicated card containing textarea + bottom action toolbar (NEVER overlapping text) */}
+        <div
+          className={`rounded-2xl border-2 transition-all duration-300 bg-white overflow-hidden shadow-xs flex flex-col ${
+            isHighlightQuestion
+              ? 'border-orange-500 ring-4 ring-orange-300/80 bg-orange-50/20'
+              : 'border-amber-200 focus-within:border-amber-500 focus-within:ring-2 focus-within:ring-amber-200'
+          }`}
+        >
           <textarea
-            rows={3}
+            ref={textareaRef}
+            rows={4}
             value={promptText}
             onChange={(e) => setPromptText(e.target.value)}
             placeholder="Tuliskan catatan soal PR atau foto bukumu di sini... Contoh: 'Bantu nomor 3 ya Kak Bintang, tentang cara menghitung luas persegi panjang jika diketahui...'"
-            className="w-full px-4 py-3 pb-12 rounded-2xl border-2 border-amber-200 focus:border-amber-500 focus:outline-none text-xs md:text-sm font-medium leading-relaxed placeholder:text-slate-400"
+            className="w-full px-4 pt-3.5 pb-2.5 text-xs md:text-sm font-medium leading-relaxed placeholder:text-slate-400 focus:outline-none resize-none bg-transparent min-h-[95px]"
           />
 
-          {/* Quick Input Actions inside textarea */}
-          <div className="absolute bottom-2.5 left-3 right-3 flex items-center justify-between flex-wrap gap-2">
+          {/* Quick Input Actions dedicated toolbar row - NEVER overlaps text */}
+          <div className="px-3 py-2 bg-amber-50/80 border-t border-amber-100 flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-1.5 flex-wrap">
               {/* Upload photo button */}
               <input
@@ -517,34 +571,34 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-900 text-xs font-semibold transition-colors cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-100/90 hover:bg-amber-200 active:bg-orange-500 active:text-white active:scale-95 text-amber-900 text-xs font-semibold transition-all cursor-pointer shadow-xs"
                 title="Unggah Foto PR dari Galeri / Dokumen"
               >
                 <Upload className="w-3.5 h-3.5 text-amber-700" />
-                <span className="hidden sm:inline">Unggah Foto</span>
+                <span className="inline text-[11px] sm:text-xs">Unggah Foto</span>
               </button>
 
               {/* Camera snap */}
               <button
                 type="button"
                 onClick={startCamera}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-900 text-xs font-semibold transition-colors cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-100/90 hover:bg-amber-200 active:bg-orange-500 active:text-white active:scale-95 text-amber-900 text-xs font-semibold transition-all cursor-pointer shadow-xs"
                 title="Buka Kamera untuk foto buku PR"
               >
                 <Camera className="w-3.5 h-3.5 text-amber-700" />
-                <span className="hidden sm:inline">Kamera</span>
+                <span className="inline text-[11px] sm:text-xs">Kamera</span>
               </button>
 
               {/* Google Drive Link Toggle Button */}
               <button
                 type="button"
                 onClick={() => setIsDriveInputOpen((prev) => !prev)}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-xs active:scale-95 ${
                   activeDriveUrl
-                    ? 'bg-blue-600 text-white font-bold'
+                    ? 'bg-blue-600 text-white font-bold active:bg-blue-800'
                     : isDriveInputOpen
-                    ? 'bg-blue-100 text-blue-900 border border-blue-300'
-                    : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200'
+                    ? 'bg-blue-100 text-blue-900 border border-blue-300 active:bg-blue-600 active:text-white'
+                    : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 active:bg-blue-600 active:text-white'
                 }`}
                 title="Tautkan Link Google Drive Foto/Dokumen PR"
               >
@@ -556,29 +610,29 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
                   <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
                   <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
                 </svg>
-                <span>Google Drive</span>
+                <span className="text-[11px] sm:text-xs">Drive</span>
               </button>
 
               {/* Voice recognition */}
               <button
                 type="button"
                 onClick={toggleSpeechRecognition}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-xs active:scale-95 ${
                   isRecording
-                    ? 'bg-rose-500 text-white animate-pulse'
-                    : 'bg-amber-100 hover:bg-amber-200 text-amber-900'
+                    ? 'bg-rose-500 text-white animate-pulse active:bg-rose-700'
+                    : 'bg-amber-100 hover:bg-amber-200 active:bg-orange-500 active:text-white text-amber-900'
                 }`}
                 title="Bicara Soal PR (Dikte Suara Bahasa Indonesia)"
               >
                 {isRecording ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5 text-amber-700" />}
-                <span className="hidden sm:inline">
+                <span className="inline text-[11px] sm:text-xs">
                   {isRecording ? 'Mendengarkan...' : 'Dikte'}
                 </span>
               </button>
             </div>
 
             {/* Token cost badge */}
-            <div className="flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200">
+            <div className="flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-white px-2.5 py-1 rounded-lg border border-amber-200 shadow-xs">
               <span>Biaya: 1 Token</span>
             </div>
           </div>
@@ -593,12 +647,12 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
           <button
             type="submit"
             disabled={isLoading || (!promptText.trim() && !imagePreview && !activeDriveUrl)}
-            className="w-full sm:w-auto px-7 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white font-black text-sm md:text-base shadow-lg shadow-amber-200 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            className="w-full sm:w-auto px-7 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white font-black text-sm md:text-base shadow-lg shadow-amber-200 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] active:from-orange-600 active:to-orange-700 active:ring-4 active:ring-orange-300 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {isLoading ? (
               <>
                 <RotateCcw className="w-4 h-4 animate-spin" />
-                <span>Kak Bintang Sedang Menganalisis PR...</span>
+                <span>Menganalisis Cepat... (Maks. 10 Detik)</span>
               </>
             ) : (
               <>
@@ -612,22 +666,58 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({
 
         {/* Sample Questions Pills */}
         <div className="pt-3 border-t border-slate-100">
-          <div className="flex items-center gap-1 text-xs font-bold text-slate-600 mb-2">
-            <HelpCircle className="w-3.5 h-3.5 text-amber-500" />
-            <span>Belum ada foto PR? Coba klik contoh soal berikut:</span>
+          <div className="flex items-center justify-between flex-wrap gap-1 text-xs font-bold text-slate-600 mb-2.5">
+            <div className="flex items-center gap-1">
+              <HelpCircle className="w-3.5 h-3.5 text-amber-500" />
+              <span>Belum ada foto PR? Coba klik contoh soal berikut:</span>
+            </div>
+            {selectedSample && (
+              <span className="text-[11px] text-orange-600 font-semibold bg-orange-50 px-2 py-0.5 rounded-lg border border-orange-200">
+                👆 Langsung diarahkan ke kotak soal
+              </span>
+            )}
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            {SAMPLE_QUESTIONS.map((s, idx) => (
-              <button
-                key={idx}
-                type="button"
-                onClick={() => handleApplySample(s)}
-                className="text-left text-[11px] md:text-xs font-semibold px-3 py-1.5 rounded-xl bg-slate-50 hover:bg-amber-100/70 text-slate-700 hover:text-amber-950 border border-slate-200 hover:border-amber-300 transition-all cursor-pointer"
-              >
-                {s.label}
-              </button>
-            ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {SAMPLE_QUESTIONS.map((s, idx) => {
+              const isSelected = selectedSample === s.label;
+              const isOrangeTheme = idx % 2 === 0;
+
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => handleApplySample(s)}
+                  className={`text-left text-xs font-semibold px-3.5 py-2.5 rounded-xl transition-all duration-150 cursor-pointer flex items-center justify-between gap-2 shadow-xs active:scale-95 active:shadow-inner ${
+                    isSelected
+                      ? isOrangeTheme
+                        ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white border-2 border-orange-600 shadow-md shadow-orange-200 ring-2 ring-orange-300 font-bold scale-[1.01]'
+                        : 'bg-gradient-to-r from-blue-600 to-sky-500 text-white border-2 border-blue-700 shadow-md shadow-blue-200 ring-2 ring-blue-300 font-bold scale-[1.01]'
+                      : isOrangeTheme
+                      ? 'bg-orange-50/70 hover:bg-orange-100 text-orange-950 border border-orange-200 hover:border-orange-400 active:bg-orange-500 active:text-white active:border-orange-600 active:ring-2 active:ring-orange-300'
+                      : 'bg-blue-50/70 hover:bg-blue-100 text-blue-950 border border-blue-200 hover:border-blue-400 active:bg-blue-600 active:text-white active:border-blue-700 active:ring-2 active:ring-blue-300'
+                  }`}
+                  title={`Klik untuk mencoba soal: ${s.label}`}
+                >
+                  <span className="leading-snug break-words flex-1">{s.label}</span>
+                  {isSelected ? (
+                    <span className="text-[10px] bg-white text-slate-900 font-extrabold px-2 py-0.5 rounded-md shadow-xs flex-shrink-0 ml-1">
+                      ✓ Terpilih
+                    </span>
+                  ) : (
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-md flex-shrink-0 ml-1 transition-colors ${
+                        isOrangeTheme
+                          ? 'text-orange-700 bg-orange-100/90'
+                          : 'text-blue-700 bg-blue-100/90'
+                      }`}
+                    >
+                      Pilih &rarr;
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       </form>
